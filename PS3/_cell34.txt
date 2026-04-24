@@ -1,0 +1,158 @@
+import math
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+
+# -----------------------------
+# Reproducibility + device
+# -----------------------------
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+print("Using device:", device)
+
+# -----------------------------
+# Tiny in-notebook corpus
+# -----------------------------
+base_sentences = [
+    "The quick brown fox jumps over the lazy dog",
+    "The brown fox jumps over the dog",
+    "The quick dog barks",
+    "The quick brown dog runs fast",
+    "The lazy dog barks and runs",
+    "The quick fox jumps and barks",
+    "The dog runs fast",
+    "The fox runs fast",
+    "The brown dog jumps over the lazy fox",
+    "The quick brown fox runs fast",
+    "The lazy dog sleeps",
+    "The quick fox sees the dog",
+    "The dog sees the fox",
+    "The fox chases the dog",
+    "The dog chases the fox",
+    "The brown fox and the brown dog run fast",
+    "The quick dog and the quick fox jump",
+    "The lazy fox sleeps",
+    "The dog barks loudly",
+    "The fox jumps quickly",
+]
+
+# Add simple compositional variation
+adjectives = ["quick", "brown", "lazy"]
+animals = ["fox", "dog"]
+verbs_intrans = ["runs", "sleeps", "barks", "jumps"]
+verbs_trans = ["sees", "chases"]
+adverbs = ["fast", "quickly", "loudly"]
+
+extra_sentences = []
+
+for adj1 in adjectives:
+    for animal1 in animals:
+        for verb in verbs_intrans:
+            if verb == "runs":
+                extra_sentences.append(f"The {adj1} {animal1} runs fast")
+            elif verb == "jumps":
+                extra_sentences.append(f"The {adj1} {animal1} jumps quickly")
+            elif verb == "barks" and animal1 == "dog":
+                extra_sentences.append(f"The {adj1} {animal1} barks loudly")
+            elif verb == "sleeps":
+                extra_sentences.append(f"The {adj1} {animal1} sleeps")
+
+for adj1 in adjectives:
+    for animal1 in animals:
+        for animal2 in animals:
+            if animal1 != animal2:
+                for verb in verbs_trans:
+                    extra_sentences.append(f"The {adj1} {animal1} {verb} the {animal2}")
+
+for adj1 in adjectives:
+    for adj2 in adjectives:
+        for animal1 in animals:
+            for animal2 in animals:
+                if animal1 != animal2:
+                    extra_sentences.append(f"The {adj1} {animal1} jumps over the {adj2} {animal2}")
+
+corpus = base_sentences + extra_sentences
+corpus = corpus * 20  # repeat to provide enough training signal
+random.shuffle(corpus)
+
+print(f"Number of training sentences: {len(corpus)}")
+print("Example sentences:")
+for s in corpus[:5]:
+    print(" -", s)
+
+# -----------------------------
+# Build vocabulary
+# -----------------------------
+special_tokens = ["<pad>", "<bos>", "<eos>", "<unk>"]
+
+words = set()
+for line in corpus:
+    for tok in line.split():
+        words.add(tok)
+
+vocab = special_tokens + sorted(words)
+stoi = {s: i for i, s in enumerate(vocab)}
+itos = {i: s for s, i in stoi.items()}
+
+PAD = stoi["<pad>"]
+BOS = stoi["<bos>"]
+EOS = stoi["<eos>"]
+UNK = stoi["<unk>"]
+vocab_size = len(vocab)
+
+print("\nVocab size:", vocab_size)
+print("Vocabulary:", vocab)
+
+def tokenize(text, add_bos=True, add_eos=True):
+    toks = text.split()
+    ids = []
+    if add_bos:
+        ids.append(BOS)
+    ids.extend([stoi.get(tok, UNK) for tok in toks])
+    if add_eos:
+        ids.append(EOS)
+    return ids
+
+def detokenize(token_ids, remove_special=True):
+    toks = []
+    for idx in token_ids:
+        tok = itos.get(int(idx), "<unk>")
+        if remove_special and tok in {"<pad>", "<bos>", "<eos>"}:
+            continue
+        toks.append(tok)
+    return " ".join(toks)
+
+# -----------------------------
+# Sequence prep
+# -----------------------------
+tokenized_corpus = [tokenize(line) for line in corpus]
+max_len = max(len(x) for x in tokenized_corpus)
+print("Max sequence length:", max_len)
+
+def sample_batch(batch_size=16):
+    batch = random.choices(tokenized_corpus, k=batch_size)
+    x_batch, y_batch = [], []
+    for ids in batch:
+        x = ids[:-1]
+        y = ids[1:]
+        pad_x = x + [PAD] * ((max_len - 1) - len(x))
+        pad_y = y + [PAD] * ((max_len - 1) - len(y))
+        x_batch.append(pad_x)
+        y_batch.append(pad_y)
+    return (
+        torch.tensor(x_batch, dtype=torch.long, device=device),
+        torch.tensor(y_batch, dtype=torch.long, device=device),
+    )
+
